@@ -128,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--hidden-size", type=int, default=64)
     parser.add_argument("--latent-size", type=int, default=16)
-    parser.add_argument("--num-layers", type=int, default=2)
+    parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--output-dir", default="model_outputs")
