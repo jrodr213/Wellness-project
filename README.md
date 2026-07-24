@@ -1,131 +1,422 @@
-# Wearable Wellness Sensor BiLSTM Autoencoder
+# Wearable Wellness Monitoring and Anomaly-Detection System
 
-## 1. Project Overview
+## Project Overview
 
-This project processes time-series data collected from a wearable wellness-monitoring system. The software works with chronological sensor readings stored in a CSV file and uses a PyTorch bidirectional LSTM autoencoder to learn patterns in overlapping windows of sensor data.
+This project is a wearable wellness-monitoring prototype that combines physical sensor circuits, ESP32 firmware, live serial data collection, CSV dataset generation, and a machine-learning analysis pipeline.
 
-The project software:
+The system is designed to:
 
-1. loads chronological sensor data from a CSV file;
-2. organizes it into overlapping time windows;
-3. trains a PyTorch bidirectional LSTM autoencoder;
-4. reconstructs each sensor window;
-5. calculates reconstruction-error scores;
-6. groups similar scores using a Gaussian Mixture Model.
+1. read wearable sensor signals from an ESP32;
+2. transmit machine-readable serial messages to a Mac;
+3. save selected live readings to CSV using capacitive-touch start/stop control;
+4. train a bidirectional LSTM autoencoder on chronological sensor windows;
+5. score reconstructed windows using mean squared reconstruction error;
+6. group reconstruction scores with a Gaussian Mixture Model.
 
-Higher reconstruction error means the model reconstructed a window less accurately. A higher error may indicate that the window is different from patterns the model learned, but it does not by itself identify a medical condition.
+The reconstruction scores and score groups are numerical engineering outputs. They are not medical diagnoses and do not prove fatigue, illness, danger, or health status.
 
-## 2. Sensor Data
+## Motivation
 
-The code supports CSV files with user-selected numeric sensor columns. Possible columns may include:
+Wearable sensors can collect useful time-series data about motion, touch, skin-adjacent temperature circuitry, pulse-sensor analog behavior, and other physical signals. This project explores how those signals can be collected into a clean dataset and analyzed with an autoencoder model.
 
-- `timestamp`
-- `heart_rate`
-- `temperature`
-- `accel_x`
-- `accel_y`
-- `accel_z`
-- `capacitive`
-- `state`
-- `label`
+The goal is not to diagnose a person. The goal is to build and document an experimental end-to-end engineering system: sensor hardware, embedded firmware, data collection, model training, reconstruction scoring, and unsupervised score grouping.
 
-Not every column is required. Each row represents one sampling time. Selected sensor features must be numeric. Rows should be arranged chronologically, although the scripts sort by the timestamp column when that column exists. The exact sensor columns used by the model depend on the supplied CSV and the `--features` command-line argument.
-
-Small example CSV:
-
-```csv
-timestamp,heart_rate,temperature,accel_x,accel_y,accel_z,capacitive,state,label
-2026-01-01T09:00:00,72,36.7,0.01,-0.03,0.98,214,resting,
-2026-01-01T09:00:01,73,36.7,0.02,-0.02,1.01,216,resting,
-2026-01-01T09:00:02,75,36.8,0.05,-0.01,1.04,219,walking,
-2026-01-01T09:00:03,78,36.8,0.08,0.01,1.08,223,walking,
-```
-
-## 3. Processing Pipeline
+## Complete Project Workflow
 
 ```text
-Sensor CSV
+Physical sensor circuits
     ↓
-Data cleaning and chronological ordering
+ESP32 firmware in Hardware_code/src/main.cpp
     ↓
-Overlapping time windows
+USB serial FIELDS and DATA messages
     ↓
-BiLSTM autoencoder training
+Hardware_code/hardware_run.py
     ↓
-Window reconstruction
+capacitive-touch-controlled CSV recording
     ↓
-Reconstruction-error scoring
+ML_code/run.py and ML_code/model.py
     ↓
-Gaussian Mixture Model grouping
+trained BiLSTM autoencoder
     ↓
-Grouped CSV results and plots
+ML_code/scoring.py
+    ↓
+reconstruction-score CSV
+    ↓
+ML_code/sorting.py
+    ↓
+GMM groups and membership probabilities
 ```
 
-`Sensor CSV`: The input file contains rows of timestamped sensor readings.
+```mermaid
+flowchart TD
+    A[Physical sensor circuits] --> B[ESP32 firmware<br/>Hardware_code/src/main.cpp]
+    B --> C[USB serial protocol<br/>FIELDS and DATA lines]
+    C --> D[Live collector<br/>Hardware_code/hardware_run.py]
+    D --> E[Touch-controlled CSV recording]
+    E --> F[Training<br/>ML_code/run.py + ML_code/model.py]
+    F --> G[Trained BiLSTM autoencoder checkpoint]
+    G --> H[Scoring<br/>ML_code/scoring.py]
+    H --> I[Reconstruction-score CSV]
+    I --> J[GMM grouping<br/>ML_code/sorting.py]
+    J --> K[Grouped CSV results and plots]
+```
 
-`Data cleaning and chronological ordering`: The scripts sort by the timestamp column when present, replace positive and negative infinity with missing values, interpolate missing selected sensor readings, and remove rows that still cannot be used.
+`Hardware_code/src/main.cpp` runs continuously on the ESP32. `Hardware_code/hardware_run.py` runs simultaneously on the Mac and reads each serial sample shortly after the ESP32 sends it. The Python script does not wait for the firmware to finish, because the firmware normally continues running until power is removed, the ESP32 is reset, or different firmware is uploaded.
 
-`Overlapping time windows`: The cleaned sensor readings are divided into fixed-length chronological windows. With the defaults, each window contains 50 rows and the next window starts 5 rows later.
+## Hardware Components
 
-`BiLSTM autoencoder training`: The model learns to reconstruct the same sensor windows it receives as input.
+The current repository confirms the following hardware interfaces through the firmware source. Some physical construction details, such as exact mounting materials and signal-conditioning component values, are not documented in repository files yet.
 
-`Window reconstruction`: After training, the model recreates each input window from its compressed latent representation.
+| Component | Purpose | Interface | Current status |
+| --- | --- | --- | --- |
+| ESP32 ESP-WROOM-32 development board | Main microcontroller for reading sensors and sending serial data | USB serial, ADC, GPIO, I2C | Required by `platformio.ini` board target `esp32dev` |
+| LM358-buffered thermistor circuit | Produces analog thermistor-related voltage | ESP32 GPIO35 analog input | Referenced by firmware comments and pin constant |
+| Pulse sensor | Produces analog pulse-sensor signal | ESP32 GPIO34 analog input | Referenced by firmware comments and pin constant |
+| Homemade foil capacitive sensor | Touch start/stop control for CSV recording | GPIO25 through 1 MΩ resistor to GPIO27 and foil pad | Confirmed by firmware comments and measurement function |
+| 1 MΩ capacitive-sensor resistor | Forms capacitive charge timing circuit | Between GPIO25 and GPIO27/foil node | Confirmed by firmware comments |
+| MPU-6050 or GY-521 module | Motion sensing through accelerometer and gyroscope raw values | I2C address `0x68` | Confirmed by firmware address and MPU6050 library |
+| Solderable protoboard | Physical mounting/interconnection board | Soldered nodes | Not verified by repository files |
+| Thin stranded wire | Flexible sensor interconnects | Physical wiring | Not verified by repository files |
+| Resistors/capacitors for signal conditioning | Filtering/dividers/biasing depending on circuit | Analog circuit elements | Exact values not verified except capacitive 1 MΩ resistor |
+| Velcro, foam, insulation, or rigid base | Wearable mounting and protection | Mechanical construction | Planned/possible, not verified by repository files |
 
-`Reconstruction-error scoring`: The scoring script compares each original window to its reconstruction using squared error.
+## Hardware Design and Physical Construction
 
-`Gaussian Mixture Model grouping`: The sorting script groups windows based only on the final reconstruction score.
+This section describes the intended physical build and the construction considerations for the current prototype. The repository currently contains firmware and software, but it does not contain a BOM, PCB design, circuit notes, photos, or safety checklist. Any construction detail not backed by the code is described as intended or requiring verification.
 
-`Grouped CSV results and plots`: The final outputs include grouped score CSV files, model-selection summaries, group summaries, and plots.
+The system should be developed in stages. Individual sensors should first be tested one at a time so their signal ranges and wiring are understood. After each circuit works independently, the circuits can be moved to a solderable protoboard and connected to the ESP32 using common power and common ground rails.
 
-## 4. Project Files
+On a protoboard, solder, component leads, and short wires form electrical nodes. Adjacent pads should be inspected carefully to avoid unintended solder bridges. Exposed conductors should be insulated so they cannot short against skin, straps, foil, neighboring wires, or the ESP32. Flexible stranded wire is preferred for wearable movement because repeated bending can break solid-core wire more easily. Wires should receive strain relief near the board and near sensor locations so motion does not pull directly on solder joints.
+
+Sensor placement matters. The pulse sensor is sensitive to motion and ambient light. The capacitive foil baseline depends on wire length, placement, nearby conductive material, and how the wearer touches it. The MPU-6050 must be secured so it measures wearable motion rather than loose board vibration. The current prototype should be treated as a temporary engineering build, not a finished enclosure or PCB.
+
+### Thermistor Circuit Construction
+
+The firmware confirms an `LM358`-buffered thermistor analog output connected to ESP32 GPIO35. It also includes a wiring comment saying the LM358 thermistor output should be moved from GPIO23 to GPIO35.
+
+The repository does not confirm the thermistor equation or exact circuit constants, such as:
+
+- NTC nominal resistance;
+- fixed divider resistor;
+- parallel resistor;
+- RC low-pass filter values;
+- supply/reference voltage;
+- beta coefficient or Steinhart-Hart coefficients;
+- divider orientation.
+
+Because those values are not verified in the project files, the firmware transmits only:
+
+- `thermistor_adc_raw`
+- `thermistor_millivolts`
+
+It does not transmit `temperature_c`. This avoids fabricating temperature values from unconfirmed calibration constants.
+
+The divider, filter, and buffer are normally used to convert resistance changes into a stable voltage, reduce noise, and isolate the sensor circuit from the ESP32 ADC input. The LM358 output entering GPIO35 must remain within the ESP32-safe analog input range. A 5 V output must not be applied directly to an ESP32 GPIO.
+
+### Pulse-Sensor Construction
+
+The firmware confirms the pulse-sensor analog signal is connected to GPIO34. It collects 100 pulse ADC samples with approximately 5 ms between readings, then reports:
+
+- `pulse_average`
+- `pulse_minimum`
+- `pulse_maximum`
+- `pulse_change`
+
+The repository does not include a validated BPM algorithm, RC filter, amplifier description, or confirmed light-blocking material. The README therefore does not claim `heart_rate_bpm` is produced. For a physical wearable, the pulse sensor should be mounted firmly, motion should be reduced, and ambient-light interference should be controlled. Dark foam or another light-blocking material may be useful, but its use is not confirmed by the repository.
+
+### Homemade Capacitive Sensor Construction
+
+The capacitive sensor circuit is confirmed in the firmware:
+
+```text
+GPIO25 → 1 MΩ resistor → GPIO27 and foil pad
+```
+
+GPIO25 drives the charging cycle. GPIO27 observes the sensing node. The foil pad acts as the touch electrode. Touching the foil changes the effective capacitance, which changes how long the receive pin takes to read as charged. Wire length, nearby conductors, the wearable mounting position, and the user’s touch all affect the untouched baseline.
+
+### MPU-6050 Mounting
+
+The firmware uses an MPU-6050 at I2C address `0x68`. The module must be mechanically secured so its axis orientation remains consistent. If the module is loose, the readings may represent board vibration instead of body movement. Power, ground, SDA, and SCL wiring must match the actual firmware configuration.
+
+The current firmware uses `Wire.begin()` with the Arduino-ESP32 default I2C pins. The repository does not contain an I2C scanner sketch confirming explicit SDA/SCL pins. The address `0x68` is an I2C device address, not an ESP32 GPIO pin.
+
+### Wearable Mounting and Enclosure
+
+The repository does not verify a completed enclosure. Suitable planned prototype features may include a forearm or wrist placement, Velcro strap, protoboard mounting, temporary rigid backing, insulated exposed leads, accessible foil pad, accessible USB connector, and light shielding around the pulse sensor. These should be treated as physical build goals unless confirmed in future hardware documentation.
+
+## Wiring and Pin Connections
+
+The wiring table below is based on `Hardware_code/src/main.cpp`.
+
+| Hardware signal | ESP32 connection | Type |
+| --- | ---: | --- |
+| LM358/thermistor output | GPIO35 | Analog ADC input |
+| Pulse-sensor signal | GPIO34 | Analog ADC input |
+| Capacitive send | GPIO25 | Digital output |
+| Capacitive receive and foil | GPIO27 | Digital input/output |
+| MPU-6050 device address | `0x68` | I2C address |
+
+MPU-6050 SDA/SCL configuration:
+
+- The firmware calls `Wire.begin()`.
+- No explicit SDA/SCL GPIO pins are set in the current source.
+- `INFO,i2c_mode,default` is printed at startup.
+- `0x68` is the MPU-6050 I2C address, not a physical ESP32 pin.
+
+All sensor circuits must share a common ground with the ESP32. GPIO34 and GPIO35 are input-only pins in this design. Do not apply 5 V directly to any ESP32 GPIO. The LM358 output entering GPIO35 must stay within the ESP32-safe analog input range.
+
+## Embedded Hardware Firmware: `Hardware_code/src/main.cpp`
+
+`Hardware_code/src/main.cpp` is Arduino-framework firmware compiled by PlatformIO and uploaded to the ESP32. It continuously reads the hardware and sends strict serial messages to the Python collector.
+
+The firmware responsibilities are:
+
+- assign hardware pins;
+- initialize serial communication at `115200`;
+- configure 12-bit ADC readings;
+- set ADC attenuation for GPIO34 and GPIO35 using `analogSetPinAttenuation(..., ADC_11db)`;
+- initialize I2C using `Wire.begin()`;
+- check for the MPU-6050 at address `0x68`;
+- run `mpu.testConnection()`;
+- read each physical sensor;
+- summarize pulse and capacitive readings;
+- format values into `INFO`, `ERROR`, `FIELDS`, and `DATA` lines;
+- transmit samples continuously.
+
+### Pin Constants
+
+```cpp
+const int THERMISTOR_PIN = 35;
+const int PULSE_PIN = 34;
+const int CAP_SEND_PIN = 25;
+const int CAP_RECEIVE_PIN = 27;
+const uint8_t MPU_ADDRESS = 0x68;
+```
+
+### Startup Messages
+
+At startup, the firmware prints configuration/status lines such as:
+
+```text
+INFO,firmware_started
+INFO,thermistor_pin,35
+INFO,pulse_pin,34
+INFO,capacitive_send_pin,25
+INFO,capacitive_receive_pin,27
+INFO,mpu_address,0x68
+INFO,i2c_mode,default
+INFO,mpu_detected,1
+```
+
+If the MPU-6050 is not detected or fails connection testing, the firmware prints:
+
+```text
+ERROR,mpu_not_detected_at_0x68
+```
+
+The firmware continues collecting thermistor, pulse, and capacitive values even if the MPU is unavailable.
+
+### Serial Field Definition
+
+The exact current `FIELDS` line is:
+
+```text
+FIELDS,timestamp_ms,thermistor_adc_raw,thermistor_millivolts,pulse_average,pulse_minimum,pulse_maximum,pulse_change,capacitive_average_us,capacitive_minimum_us,capacitive_maximum_us,mpu_connected,accel_x_raw,accel_y_raw,accel_z_raw,gyro_x_raw,gyro_y_raw,gyro_z_raw
+```
+
+The `DATA` row format is:
+
+```text
+DATA,<timestamp_ms>,<thermistor_adc_raw>,<thermistor_millivolts>,<pulse_average>,<pulse_minimum>,<pulse_maximum>,<pulse_change>,<capacitive_average_us>,<capacitive_minimum_us>,<capacitive_maximum_us>,<mpu_connected>,<accel_x_raw>,<accel_y_raw>,<accel_z_raw>,<gyro_x_raw>,<gyro_y_raw>,<gyro_z_raw>
+```
+
+Optional MPU measurement fields are left blank when the MPU is unavailable. The firmware does not fabricate MPU measurements.
+
+### Sensor Handling
+
+Thermistor:
+
+- Reads GPIO35.
+- Takes 16 samples.
+- Rejects raw readings at the extremes (`0` and `4095`).
+- Reports averaged ADC raw value and averaged millivolts.
+- Does not calculate temperature because validated conversion constants are not present.
+
+Pulse sensor:
+
+- Reads GPIO34.
+- Collects 100 samples.
+- Waits about 5 ms between samples.
+- Reports average, minimum, maximum, and change.
+- Does not report BPM because no validated BPM algorithm exists in the current code.
+
+Capacitive sensor:
+
+- Uses GPIO25 as the send pin and GPIO27 as the receive/foil node.
+- Measures charge time with a `30000` microsecond timeout.
+- Takes 30 readings per output row.
+- Reports average, minimum, and maximum microsecond charge times.
+
+MPU-6050:
+
+- Uses address `0x68`.
+- Calls `mpu.getMotion6()` only when connected.
+- Reports raw accelerometer and gyroscope values.
+- Does not convert acceleration to g because the current firmware does not explicitly confirm the accelerometer range.
+
+Because the pulse summary itself takes about 500 ms, the firmware sends one `DATA` line after each completed pulse-analysis block and does not add another large delay afterward.
+
+## Live Data Collection: `Hardware_code/hardware_run.py`
+
+`Hardware_code/hardware_run.py` is the live Python serial collector. It opens the ESP32 serial port, waits for the firmware `FIELDS` line, calibrates the capacitive sensor baseline, and saves valid `DATA` rows during a touch-controlled recording interval.
+
+Supported command-line arguments include:
+
+- `--port`
+- `--baud`
+- `--output`
+- `--capacitive-field`
+- `--touch-threshold`
+- `--release-threshold`
+- `--touch-direction`
+- `--calibration-samples`
+- `--debounce-ms`
+- `--serial-timeout`
+- `--reset-wait`
+- `--status-interval`
+- `--overwrite`
+- `--list-ports`
+- `--print-all-samples`
+
+Important defaults:
+
+| Option | Default |
+| --- | --- |
+| `--port` | `/dev/cu.usbserial-0001` |
+| `--baud` | `115200` |
+| `--output` | `data/wellness_data.csv` |
+| `--capacitive-field` | `capacitive_average_us` |
+| `--touch-direction` | `above` |
+| `--calibration-samples` | `50` |
+| `--debounce-ms` | `750` |
+| `--serial-timeout` | `2` |
+| `--reset-wait` | `2` |
+| `--status-interval` | `1` |
+
+### Live Serial Behavior
+
+The collector:
+
+- opens the serial port with `pyserial`;
+- explains when the port cannot be opened, including the common case where another Serial Monitor is using it;
+- waits briefly because opening serial may reset the ESP32;
+- decodes serial bytes as UTF-8 with errors ignored;
+- ignores blank and bootloader lines;
+- waits for the `FIELDS` line;
+- uses the `FIELDS` line as the CSV sensor column definition;
+- validates every `DATA` row against the expected field count;
+- displays but does not save `INFO` and `ERROR` lines;
+- counts malformed rows without crashing;
+- allows blank optional fields;
+- rejects nonnumeric, NaN, and infinite values;
+- preserves partial recordings on interruption or serial failure.
+
+### Capacitive Touch Recording
+
+Before recording, the script tells the user not to touch the foil and collects untouched capacitive baseline samples. It calculates:
+
+- median baseline;
+- median absolute deviation;
+- automatic touch threshold;
+- automatic release threshold.
+
+It uses hysteresis, release detection, and debounce timing. A held finger counts as one touch. The first released-to-touched transition starts recording and is not saved. The second separate touch stops recording before saving the stop-trigger row.
+
+### CSV Output
+
+The collector saves the firmware fields in the same order and appends:
+
+- `host_timestamp_iso`
+- `recording_elapsed_seconds`
+- `sample_number`
+
+It uses `csv.DictWriter`, creates output directories automatically, avoids overwriting existing CSV files unless `--overwrite` is supplied, flushes frequently, and keeps rows in chronological arrival order.
+
+## CSV Dataset
+
+The live hardware CSV begins with the firmware fields and then includes host-side metadata. The current columns are:
+
+```text
+timestamp_ms
+thermistor_adc_raw
+thermistor_millivolts
+pulse_average
+pulse_minimum
+pulse_maximum
+pulse_change
+capacitive_average_us
+capacitive_minimum_us
+capacitive_maximum_us
+mpu_connected
+accel_x_raw
+accel_y_raw
+accel_z_raw
+gyro_x_raw
+gyro_y_raw
+gyro_z_raw
+host_timestamp_iso
+recording_elapsed_seconds
+sample_number
+```
+
+The machine-learning scripts can train on any selected numeric columns. Non-feature metadata columns should be excluded through `--features` or by relying on automatic numeric feature selection where appropriate. The ML scripts do not standardize or normalize data.
+
+## Machine-Learning Pipeline
+
+The ML code lives in `ML_code/`.
 
 ### `model.py`
 
-`model.py` defines the reusable PyTorch model and helper functions. Its main model class is `BiLSTMAutoencoder`.
-
-The architecture contains:
+`model.py` defines the reusable `BiLSTMAutoencoder` and a `SensorWindowDataset`. The model architecture contains:
 
 - a bidirectional LSTM encoder;
-- forward and backward processing over each input sequence;
-- a combined hidden representation from the final forward and backward encoder states;
-- a linear bottleneck layer that creates a compressed latent vector;
-- a decoder LSTM that receives the latent vector repeated across the sequence length;
-- a final linear output layer that reconstructs the original number of sensor features.
+- a combined final forward/backward hidden representation;
+- a linear latent bottleneck;
+- a decoder LSTM;
+- a final linear output layer that reconstructs the original number of features.
 
-`model.py` can also train the model directly and save outputs under `model_outputs/` by default. The newer project workflow uses `run.py` for training.
+The model input shape is:
+
+```text
+[batch_size, sequence_length, number_of_sensor_features]
+```
+
+Current defaults include a window size of `50`, stride of `5`, hidden size of `64`, latent size of `16`, one LSTM layer, batch size of `32`, maximum `50` epochs, Adam learning rate `0.001`, and early-stopping patience of `8`. The dropout argument defaults to `0.2`, but actual LSTM dropout is `0.0` with one LSTM layer because PyTorch LSTM dropout applies between stacked layers.
+
+`model.py` can train directly and save `model_outputs/`, but the main workflow uses `run.py`.
 
 ### `run.py`
 
-`run.py` is the main training script. It:
+`run.py` trains the BiLSTM autoencoder from a CSV. It:
 
-- loads the training CSV;
-- selects features from `--features`, or automatically selects numeric columns when `--features` is not supplied;
-- excludes `timestamp`, `state`, `label`, `cluster`, `anomaly`, and `is_anomaly` from automatic feature selection;
-- validates that selected features exist and are numeric;
-- sorts data by the timestamp column when it exists;
-- replaces infinite values, interpolates missing selected sensor values, and removes rows that remain unusable;
-- creates chronological overlapping windows;
-- splits windows chronologically into training and validation sets;
-- trains the autoencoder using Adam and mean squared reconstruction loss;
-- uses early stopping based on validation loss;
-- saves the best model checkpoint to the path supplied by `--output`.
-
-Training uses each input window as its own reconstruction target. The training loss is PyTorch `MSELoss`, which averages squared differences between reconstructed values and original values.
+- loads CSV data with pandas;
+- selects requested features or automatic numeric columns;
+- excludes `timestamp`, `state`, `label`, `cluster`, `anomaly`, and `is_anomaly` from automatic selection;
+- validates that selected features are numeric;
+- sorts by timestamp when present;
+- replaces infinity with missing values;
+- interpolates selected numeric features;
+- removes rows that still cannot be used;
+- creates overlapping chronological windows;
+- splits windows chronologically into train/validation sets;
+- trains with `MSELoss` and Adam;
+- saves the best checkpoint with model configuration and loss history.
 
 ### `scoring.py`
 
-`scoring.py` loads a trained checkpoint and calculates reconstruction scores for all available windows in a CSV. It:
+`scoring.py` loads a trained checkpoint, rebuilds the same autoencoder architecture, recreates windows using the saved feature order/window size/stride, runs the model in evaluation mode, and saves reconstruction scores.
 
-- loads the trained `.pt` checkpoint;
-- reads the selected feature order, input feature count, window size, stride, hidden size, latent size, dropout, number of LSTM layers, and model weights from the checkpoint;
-- recreates windows using the saved feature order and configuration;
-- rebuilds the `BiLSTMAutoencoder` from `model.py`;
-- runs the model in evaluation mode with gradients disabled;
-- reconstructs every window without changing model weights;
-- calculates feature-level and final reconstruction scores;
-- saves the scores to a CSV.
-
-The scoring formula in `scoring.py` is:
+The scoring formula is:
 
 ```text
 squared_error = (original - reconstructed) ** 2
@@ -133,156 +424,115 @@ feature_score_for_feature_j = mean(squared_error over all timestamps for feature
 final_reconstruction_score = mean(squared_error over all timestamps and all selected features)
 ```
 
-In plain English, the script squares the difference between every original sensor value and reconstructed sensor value. It then averages those squared differences across time for each feature, and across both time and features for the final window score.
-
-Training loss and scoring are closely related but used at different times:
-
-- During training, `run.py` uses `MSELoss` to update model weights.
-- After training, `scoring.py` calculates squared reconstruction scores with no weight updates.
-
-`scoring.py` does not square the final MSE again.
+The final score is mean squared reconstruction error for the complete window. It is not squared again.
 
 ### `sorting.py`
 
-`sorting.py` reads the reconstruction-score CSV produced by `scoring.py` and groups windows using a Gaussian Mixture Model. It:
+`sorting.py` reads the reconstruction-score CSV and groups windows based only on `final_reconstruction_score`. It:
 
-- reads the score CSV;
-- validates the requested score column;
-- keeps the original reconstruction scores unchanged;
-- creates `log_reconstruction_score = np.log1p(original_score)` for fitting;
+- validates numeric, finite, nonnegative scores;
+- uses `log_reconstruction_score = np.log1p(original_score)` for GMM fitting;
 - fits candidate Gaussian Mixture Models from `--min-components` through `--max-components`;
-- computes BIC and AIC for every candidate model;
-- selects the model with the lowest BIC;
-- assigns raw GMM labels and membership probabilities;
-- reorders groups so group `0` has the lowest average original reconstruction score, group `1` has the next-lowest average, and so on;
-- saves grouped results, model-selection data, group summaries, and plots.
+- computes BIC and AIC;
+- selects the lowest-BIC model;
+- assigns membership probabilities;
+- reorders groups so group `0` has the lowest average original reconstruction score;
+- saves grouped CSV output, model-selection CSV, group summary CSV, and plots.
 
-The GMM groups are mathematical score groups. They are not medical classifications.
+The groups are mathematical score groups, not medical categories.
 
-### Other Project Files
+## Installation
 
-| File | Purpose |
-| --- | --- |
-| `README.md` | Project documentation. |
-| `requirements.txt` | Third-party Python dependencies needed by the scripts. |
+### Python Dependencies
 
-No sample CSV files or generated output directories were present when this README was written.
+Install Python dependencies for the ML scripts and hardware collector:
 
-## 5. Model Architecture
-
-The main training workflow uses `run.py`, which creates `BiLSTMAutoencoder` from `model.py` with one LSTM layer.
-
-| Setting | Current Default |
-| --- | --- |
-| Input shape | `[batch_size, sequence_length, number_of_sensor_features]` |
-| Window size / sequence length | `50` |
-| Stride | `5` |
-| Number of selected features | Depends on `--features` or automatic numeric-column selection |
-| Hidden size | `64` |
-| Latent size | `16` |
-| Number of LSTM layers | `1` |
-| Bidirectional setting | Encoder is bidirectional; decoder is not bidirectional |
-| Dropout | Argument default is `0.2`, but actual LSTM dropout is `0.0` when there is only one LSTM layer |
-| Optimizer | Adam |
-| Learning rate | `0.001` |
-| Batch size | `32` |
-| Maximum epochs | `50` |
-| Early-stopping patience | `8` |
-| Training ratio | `0.8` |
-| Validation ratio | `0.2` |
-
-The model input shape is:
-
-```text
-[batch size, sequence length, number of sensor features]
+```bash
+cd ML_code
+python3 -m pip install -r requirements.txt
 ```
 
-`Sequence length` is the number of chronological rows in one window. With the default window size, each input window contains 50 rows.
+If using the project virtual environment from the repository root:
 
-`Batch size` is the number of windows processed before a training update. With the default batch size, the model processes up to 32 windows per training step.
+```bash
+cd ML_code
+source ../.venv/bin/activate
+python -m pip install -r requirements.txt
+```
 
-`Number of sensor features` is the number of selected numeric sensor columns, such as `heart_rate`, `temperature`, and accelerometer columns.
-
-Bidirectional processing means the encoder has one LSTM direction that reads the sequence forward and another that reads the sequence backward. The code combines the final forward and backward hidden states before passing them through the latent bottleneck.
-
-The code accepts a dropout value, but PyTorch LSTM dropout is only applied between stacked LSTM layers. Because the current training script uses one LSTM layer, the model sets actual LSTM dropout to `0.0`.
-
-## 6. Training Process
-
-Training starts by reading the CSV and selecting numeric sensor features. The selected readings are sorted chronologically when the timestamp column exists. The script then creates overlapping windows, where each window is a small chronological sequence.
-
-The windows are split chronologically: the first portion is used for training and the final portion is used for validation. The validation windows are not randomly mixed into the training portion.
-
-For each training batch:
-
-1. The input window is passed through the BiLSTM encoder.
-2. The encoder output is compressed into a latent vector.
-3. The decoder reconstructs the full window.
-4. The reconstructed window is compared with the original input window.
-5. `MSELoss` calculates the mean squared reconstruction error.
-6. Backpropagation computes gradients.
-7. Adam updates the model weights.
-
-Adam is an optimizer that uses gradient history and adaptive update sizes to adjust model parameters during training.
-
-At the end of each epoch, validation loss is calculated without weight updates. Early stopping tracks validation loss. When validation loss improves, `run.py` saves a new best checkpoint. If validation loss does not improve for the configured patience value, training stops early.
-
-## 7. Requirements
-
-The project imports these third-party libraries:
+The current `ML_code/requirements.txt` contains:
 
 - `matplotlib`
 - `numpy`
 - `pandas`
 - `scikit-learn`
 - `torch`
+- `pyserial`
 
-Install them with:
+### PlatformIO
 
-```bash
-python3 -m pip install -r requirements.txt
+The ESP32 firmware is built with PlatformIO using `Hardware_code/platformio.ini`:
+
+```ini
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+framework = arduino
+monitor_speed = 115200
+lib_deps =
+    electroniccats/MPU6050
 ```
 
-If using the project virtual environment:
+Install PlatformIO if `pio` is not available on your system.
+
+## Complete Usage Instructions
+
+### 1. Build or Upload ESP32 Firmware
+
+Compile firmware:
 
 ```bash
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+cd Hardware_code
+pio run
 ```
 
-## 8. Expected CSV Format
-
-Example CSV:
-
-```csv
-timestamp,heart_rate,temperature,accel_x,accel_y,accel_z,capacitive,state,label
-2026-01-01T09:00:00,72,36.7,0.01,-0.03,0.98,214,resting,
-2026-01-01T09:00:01,73,36.7,0.02,-0.02,1.01,216,resting,
-2026-01-01T09:00:02,75,36.8,0.05,-0.01,1.04,219,walking,
-2026-01-01T09:00:03,78,36.8,0.08,0.01,1.08,223,walking,
-```
-
-The timestamp column defaults to `timestamp`. You can change it with `--timestamp-col`.
-
-Feature selection works in two ways:
-
-- Provide features manually with `--features heart_rate temperature accel_x accel_y accel_z capacitive`.
-- Omit `--features` and let `run.py` select numeric columns automatically while excluding metadata columns.
-
-Selected feature columns must be numeric. The scripts replace positive and negative infinity with missing values, interpolate missing selected sensor values in chronological order, and remove rows that still contain unusable selected values.
-
-The number of usable rows must be at least the window size. In practice, at least two generated windows are needed for training because `run.py` requires both a training set and validation set.
-
-The project does not normalize or standardize sensor values. Scoring uses the same unscaled feature format used during training.
-
-## 9. How to Train the Model
-
-Use `run.py` to train the model:
+Upload firmware:
 
 ```bash
-python3 run.py \
-  --csv wellness_data.csv \
-  --features heart_rate temperature accel_x accel_y accel_z capacitive \
+cd Hardware_code
+pio run --target upload
+```
+
+### 2. List Serial Ports
+
+```bash
+cd Hardware_code
+../.venv/bin/python hardware_run.py --list-ports
+```
+
+### 3. Collect Live CSV Data
+
+Start the collector while the ESP32 is connected:
+
+```bash
+cd Hardware_code
+../.venv/bin/python hardware_run.py \
+  --port /dev/cu.usbserial-0001 \
+  --baud 115200 \
+  --output data/wellness_data.csv
+```
+
+Keep your finger off the foil during calibration. Touch once to start recording. Release. Touch a second time to stop.
+
+### 4. Train the Autoencoder
+
+Example using numeric columns produced by the current firmware:
+
+```bash
+cd ML_code
+../.venv/bin/python run.py \
+  --csv ../Hardware_code/data/wellness_data.csv \
+  --features thermistor_adc_raw thermistor_millivolts pulse_average pulse_minimum pulse_maximum pulse_change capacitive_average_us capacitive_minimum_us capacitive_maximum_us mpu_connected accel_x_raw accel_y_raw accel_z_raw gyro_x_raw gyro_y_raw gyro_z_raw \
   --window-size 50 \
   --stride 5 \
   --batch-size 32 \
@@ -290,209 +540,114 @@ python3 run.py \
   --output final_bilstm_autoencoder.pt
 ```
 
-Important options:
+If the MPU is disconnected, its measurement fields may be blank, and those columns may be removed during cleaning or should be excluded from `--features`.
 
-| Option | Meaning |
-| --- | --- |
-| `--csv` | Path to the training CSV file. |
-| `--features` | Numeric sensor columns to use. If omitted, numeric columns are selected automatically. |
-| `--timestamp-col` | Timestamp column used for chronological sorting. Default: `timestamp`. |
-| `--window-size` | Number of rows per window. Default: `50`. |
-| `--stride` | Number of rows to move forward between windows. Default: `5`. |
-| `--train-ratio` | Chronological fraction of windows used for training. Default: `0.8`. |
-| `--batch-size` | Number of windows per training batch. Default: `32`. |
-| `--epochs` | Maximum number of training epochs. Default: `50`. |
-| `--learning-rate` | Adam learning rate. Default: `0.001`. |
-| `--hidden-size` | LSTM hidden size. Default: `64`. |
-| `--latent-size` | Bottleneck latent size. Default: `16`. |
-| `--dropout` | Dropout argument passed to the model. With one LSTM layer, actual LSTM dropout is `0.0`. |
-| `--patience` | Early-stopping patience. Default: `8`. |
-| `--output` | Path for the best checkpoint. Default: `final_bilstm_autoencoder.pt`. |
-
-## 10. How to Calculate Reconstruction Scores
-
-Use `scoring.py` after training:
+### 5. Calculate Reconstruction Scores
 
 ```bash
-python3 scoring.py \
-  --csv wellness_data.csv \
+cd ML_code
+../.venv/bin/python scoring.py \
+  --csv ../Hardware_code/data/wellness_data.csv \
   --model final_bilstm_autoencoder.pt \
   --output-csv reconstruction_scores.csv
 ```
 
-`scoring.py` creates a CSV with:
-
-- `window_number`
-- `window_start_row`
-- `window_end_row`
-- `window_start_timestamp`, when the timestamp column exists
-- `window_end_timestamp`, when the timestamp column exists
-- one feature-level MSE column for every selected feature, such as `heart_rate_mse`
-- `final_reconstruction_score`
-
-The final reconstruction-score formula is:
-
-```text
-final_reconstruction_score =
-    mean((original - reconstructed) ** 2 over all timestamps and all selected features)
-```
-
-This is the mean squared reconstruction error for the complete window. It is not squared again.
-
-## 11. How to Group Reconstruction Scores
-
-Use `sorting.py` after creating `reconstruction_scores.csv`:
+### 6. Group Reconstruction Scores
 
 ```bash
-python3 sorting.py \
+cd ML_code
+../.venv/bin/python sorting.py \
   --input-csv reconstruction_scores.csv \
   --output-csv grouped_reconstruction_scores.csv \
   --score-column final_reconstruction_score
 ```
 
-`sorting.py` keeps all original columns and adds:
-
-- `score_group`
-- `group_confidence`
-- `log_reconstruction_score`
-- `probability_group_0`
-- `probability_group_1`
-- additional `probability_group_N` columns when more groups are selected
-
-The groups are reordered by the average original reconstruction score. Group `0` has the lowest average original reconstruction score, group `1` has the next-lowest average, and so on.
-
-## 12. Output Files
-
-The scripts can create the following important outputs:
-
-| Output File | Created By | Contents |
-| --- | --- | --- |
-| `final_bilstm_autoencoder.pt` | `run.py` | Best model checkpoint saved during training. The path is configurable with `--output`. |
-| `reconstruction_scores.csv` | `scoring.py` | Chronological per-window reconstruction scores. The path is configurable with `--output-csv`. |
-| `grouped_reconstruction_scores.csv` | `sorting.py` | Original score CSV plus GMM group assignments and group probabilities. The path is configurable with `--output-csv`. |
-| `gmm_model_selection.csv` | `sorting.py` | BIC/AIC table for candidate GMM component counts. Saved beside the grouped output CSV. |
-| `gmm_group_summary.csv` | `sorting.py` | One-row-per-group summary statistics. Saved beside the grouped output CSV. |
-| `gmm_score_groups.png` | `sorting.py` | Histogram of `log1p` reconstruction scores with fitted Gaussian component curves. The path is configurable with `--plot`. |
-| `reconstruction_groups_over_time.png` | `sorting.py` | Chronological scatter plot of reconstruction scores colored by group. Saved beside the grouped output CSV. |
-
-`model.py` can also be run directly. When used directly, it saves these files in `model_outputs/` by default:
-
-| Output File | Contents |
-| --- | --- |
-| `best_bilstm_autoencoder.pt` | Best checkpoint from `model.py` training. |
-| `training_history.csv` | Epoch-level training and validation loss history. |
-| `training_loss.png` | Training/validation loss plot. |
-| `model_config.json` | Selected feature names, window size, model configuration, and best validation loss. |
-| `original_windows.npy` | NumPy array of original windows. |
-| `reconstructed_windows.npy` | NumPy array of reconstructed windows. |
-| `reconstruction_errors.csv` | Per-window numerical reconstruction errors from `model.py`. |
-
-`run.py` does not save `training_history.csv` or `training_loss.png`; it stores training and validation loss history inside the checkpoint.
-
-## 13. Device Selection
-
-The code selects the compute device in this order:
-
-1. CUDA for compatible NVIDIA GPUs;
-2. Apple Silicon MPS when available;
-3. CPU as the fallback.
-
-`run.py` and `scoring.py` print the selected device when they run. `sorting.py` does not use PyTorch model computation and does not select a CUDA/MPS/CPU device.
-
-## 14. Example Project Workflow
-
-1. Prepare the sensor CSV.
-
-2. Train the model:
-
-```bash
-python3 run.py \
-  --csv wellness_data.csv \
-  --features heart_rate temperature accel_x accel_y accel_z capacitive \
-  --window-size 50 \
-  --stride 5 \
-  --batch-size 32 \
-  --epochs 50 \
-  --output final_bilstm_autoencoder.pt
-```
-
-3. Score all windows:
-
-```bash
-python3 scoring.py \
-  --csv wellness_data.csv \
-  --model final_bilstm_autoencoder.pt \
-  --output-csv reconstruction_scores.csv
-```
-
-4. Group the scores:
-
-```bash
-python3 sorting.py \
-  --input-csv reconstruction_scores.csv \
-  --output-csv grouped_reconstruction_scores.csv \
-  --score-column final_reconstruction_score
-```
-
-5. Review the output CSV files and plots.
-
-## 15. Interpretation of Results
-
-Low reconstruction scores indicate the model reconstructed those patterns more accurately.
-
-High reconstruction scores indicate greater mismatch with patterns learned during training. A high score can result from unusual activity, noise, sensor movement, sensor failure, poor training coverage, or a genuinely different pattern.
-
-GMM probabilities describe mathematical group membership based on reconstruction scores. Score groups require external labels or observations before being assigned behavioral meanings.
-
-## 16. Limitations
-
-- Results depend on training-data quality and coverage.
-- Overlapping windows are not fully independent.
-- A BiLSTM requires the complete window before producing its representation.
-- The project does not normalize sensor values, so sensors with different numerical ranges can influence reconstruction loss differently.
-- High reconstruction error is not automatically a health warning.
-- The Gaussian Mixture Model assumes the score distribution can be represented as a mixture of Gaussian components after the `log1p` transform.
-- Small datasets may cause overfitting or unstable grouping.
-
-## 17. Reproducibility
-
-The scripts include several reproducibility features:
-
-- `run.py` uses random seeds for Python, NumPy, and PyTorch.
-- `scoring.py` also sets random seeds, although it does not update model weights.
-- `sorting.py` uses a configurable random state for Gaussian Mixture Model fitting.
-- The trained checkpoint stores selected feature order.
-- The trained checkpoint stores model configuration, including window size, stride, hidden size, latent size, dropout, number of LSTM layers, batch size, and learning rate.
-- The train/validation split is chronological.
-- The checkpoint stores the best epoch, best validation loss, training-loss history, validation-loss history, optimizer state, model state dictionary, and model class name.
-
-## 18. Project Structure
-
-Actual current project files and recommended locations:
+## Project File Structure
 
 ```text
-Wearable Wellness Sensor BiLSTM Autoencoder/
+Wearable Wellness Monitoring and Anomaly-Detection System/
 ├── README.md
-├── requirements.txt
-├── model.py
-├── run.py
-├── scoring.py
-├── sorting.py
-├── data/
-│   └── wellness_data.csv
-├── models/
-│   └── final_bilstm_autoencoder.pt
-└── outputs/
-    ├── reconstruction_scores.csv
-    ├── grouped_reconstruction_scores.csv
-    ├── gmm_model_selection.csv
-    ├── gmm_group_summary.csv
-    ├── gmm_score_groups.png
-    └── reconstruction_groups_over_time.png
+├── .gitignore
+├── Hardware_code/
+│   ├── hardware_run.py
+│   ├── platformio.ini
+│   └── src/
+│       └── main.cpp
+└── ML_code/
+    ├── requirements.txt
+    ├── model.py
+    ├── run.py
+    ├── scoring.py
+    └── sorting.py
 ```
 
-The `data/`, `models/`, and `outputs/` folders are recommended organization locations. They were not present in the current project folder when this README was written.
+No `.ino`, `.h`, hardware report, BOM, safety checklist, PCB documentation, or sample CSV files were present when this README was updated.
 
-## 19. Disclaimer
+## Hardware Testing and Verification
+
+Repository-confirmed checks:
+
+- `Hardware_code/src/main.cpp` compiled successfully with PlatformIO from `Hardware_code/`.
+- `Hardware_code/hardware_run.py` supports `--help` and `--list-ports`.
+- The firmware prints a strict `FIELDS` line before `DATA` lines.
+- The collector waits for `FIELDS`, validates `DATA` row lengths, and saves only rows during the recording state.
+
+Recommended hardware verification steps:
+
+1. Confirm the ESP32 appears as a serial device.
+2. Run `pio run` from `Hardware_code/`.
+3. Upload with `pio run --target upload`.
+4. Run `hardware_run.py --list-ports`.
+5. Open the collector and verify `INFO`, `FIELDS`, and `DATA` lines are received.
+6. Confirm untouched capacitive baseline and touch thresholds.
+7. Confirm GPIO35 voltage remains ESP32-safe.
+8. Confirm pulse sensor readings change with placement and reduce noise with stable mounting.
+9. Confirm MPU detection prints `INFO,mpu_detected,1` when the MPU-6050 is connected correctly.
+
+## Current Development Status
+
+Completed in the current repository:
+
+- ESP32 firmware source in `Hardware_code/src/main.cpp`.
+- PlatformIO configuration in `Hardware_code/platformio.ini`.
+- Live serial collector in `Hardware_code/hardware_run.py`.
+- ML model, training, scoring, and GMM grouping scripts in `ML_code/`.
+- Root README documentation.
+
+Not verified by repository files:
+
+- Thermistor conversion constants and temperature equation.
+- Exact thermistor circuit topology and resistor/capacitor values.
+- Explicit MPU-6050 SDA/SCL pins from an I2C scanner sketch.
+- Completed wearable enclosure, PCB, BOM, safety checklist, or mounting documentation.
+- Real sample CSV data.
+
+## Known Limitations
+
+- The thermistor is recorded as ADC raw and millivolts only; `temperature_c` is not implemented.
+- The pulse sensor reports summary ADC statistics, not validated BPM.
+- MPU acceleration is reported as raw counts, not g units.
+- The current firmware uses default `Wire.begin()` I2C pins, because no scanner sketch with explicit pins exists in the repository.
+- Sensor columns are not normalized or standardized before training.
+- Sensors with larger numeric ranges can dominate reconstruction error.
+- Overlapping windows are not independent.
+- A BiLSTM requires a complete window before producing its representation.
+- GMM grouping assumes the transformed score distribution can be represented as a mixture of Gaussian components.
+- Small datasets can cause overfitting or unstable grouping.
+
+## Future Improvements
+
+- Add verified thermistor circuit documentation and implement calibrated `temperature_c`.
+- Add a validated pulse/BPM algorithm if reliable pulse waveform processing is confirmed.
+- Add an I2C scanner sketch or hardware note confirming SDA/SCL wiring.
+- Add sample CSV data for testing the ML pipeline.
+- Add a hardware BOM and safety checklist.
+- Add photos or diagrams of the physical wearable prototype.
+- Design a PCB or safer enclosed prototype after the circuit is validated.
+- Add automated tests for CSV parsing, scoring output, and GMM grouping.
+
+## Safety and Medical Disclaimer
 
 This project is an experimental engineering and machine-learning system. Its reconstruction scores and groups are not medical diagnoses and should not be used as a substitute for professional medical evaluation.
+
+Use care with wearable electronics. Do not apply unsafe voltages to the ESP32 or to any skin-contacting circuit. Insulate exposed conductors, provide strain relief, and verify that all analog inputs remain within ESP32-safe voltage limits before wearing or collecting data.
