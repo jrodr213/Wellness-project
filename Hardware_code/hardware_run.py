@@ -8,7 +8,8 @@ Example:
 
 The ESP32 firmware runs continuously. This script starts saving rows only after
 the first distinct capacitive touch and stops before saving the second distinct
-touch.
+touch. The firmware emits calibrated/processed values; this script records
+those values as received and does not simulate sensor data.
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ BOOT_PREFIXES = (
     "entry ",
     "configsip:",
 )
+
+TEXT_FIELDS = {"movement_status"}
 
 
 class CollectorState(Enum):
@@ -69,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default="/dev/cu.usbserial-0001")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--output", default="data/wellness_data.csv")
-    parser.add_argument("--capacitive-field", default="capacitive_average_us")
+    parser.add_argument("--capacitive-field", default="capacitive_filtered_us")
     parser.add_argument("--touch-threshold", type=float, default=None)
     parser.add_argument("--release-threshold", type=float, default=None)
     parser.add_argument(
@@ -81,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debounce-ms", type=int, default=750)
     parser.add_argument("--serial-timeout", type=float, default=2)
     parser.add_argument("--reset-wait", type=float, default=2)
+    parser.add_argument("--reconnect-delay", type=float, default=3)
     parser.add_argument("--status-interval", type=float, default=1)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--list-ports", action="store_true")
@@ -124,6 +128,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--serial-timeout must be greater than 0.")
     if args.reset_wait < 0:
         raise ValueError("--reset-wait must be greater than or equal to 0.")
+    if args.reconnect_delay <= 0:
+        raise ValueError("--reconnect-delay must be greater than 0.")
     if args.status_interval <= 0:
         raise ValueError("--status-interval must be greater than 0.")
 
@@ -138,22 +144,55 @@ def open_serial(args: argparse.Namespace):
             "python3 -m pip install pyserial"
         ) from exc
 
-    try:
-        connection = serial.Serial(
-            port=args.port,
-            baudrate=args.baud,
-            timeout=args.serial_timeout,
-        )
-    except SerialException as exc:
-        raise RuntimeError(
-            f"Could not open serial port {args.port}. If another Serial Monitor is "
-            "already using the port, close it and try again."
-        ) from exc
+    while True:
+        try:
+            connection = serial.Serial(
+                port=args.port,
+                baudrate=args.baud,
+                timeout=args.serial_timeout,
+            )
+            break
+        except SerialException as exc:
+            print(
+                f"Could not open serial port {args.port}: {exc}. "
+                f"Retrying in {args.reconnect_delay:.1f}s...",
+                file=sys.stderr,
+            )
+            time.sleep(args.reconnect_delay)
 
     print(f"Opened {args.port} at {args.baud} baud.")
     print(f"Waiting {args.reset_wait:.1f}s for possible ESP32 reset...")
     time.sleep(args.reset_wait)
     connection.reset_input_buffer()
+    return connection
+
+
+def is_serial_exception(exc: BaseException) -> bool:
+    return exc.__class__.__name__ == "SerialException"
+
+
+def close_serial_quietly(connection) -> None:
+    try:
+        connection.close()
+    except Exception:
+        pass
+
+
+def reconnect_serial(connection, args: argparse.Namespace, expected_fields: list[str]):
+    close_serial_quietly(connection)
+    print(
+        f"Serial connection lost. Reconnecting to {args.port} every "
+        f"{args.reconnect_delay:.1f}s...",
+        file=sys.stderr,
+    )
+    connection = open_serial(args)
+    fields = wait_for_fields(connection)
+    if fields != expected_fields:
+        raise RuntimeError(
+            "Firmware FIELDS changed after reconnect; restart the collector so the "
+            "CSV header matches the DATA rows."
+        )
+    print("Serial reconnected.")
     return connection
 
 
@@ -211,6 +250,8 @@ def numeric_value(row: dict[str, str], field: str) -> float:
 
 def validate_numeric_row(row: dict[str, str]) -> None:
     for field, value in row.items():
+        if field in TEXT_FIELDS:
+            continue
         text = value.strip()
         if text == "":
             continue
@@ -288,6 +329,9 @@ def wait_for_fields(connection) -> list[str]:
         if line.startswith("INFO,"):
             print(line)
             continue
+        if line.startswith("WARNING,"):
+            print(line)
+            continue
         if line.startswith("ERROR,"):
             print(line, file=sys.stderr)
             continue
@@ -311,6 +355,10 @@ def read_next_data_row(
     if is_ignored_line(line):
         return None
     if line.startswith("INFO,"):
+        if print_protocol:
+            print(line)
+        return None
+    if line.startswith("WARNING,"):
         if print_protocol:
             print(line)
         return None
@@ -396,14 +444,19 @@ def display_status(
     state: CollectorState,
 ) -> None:
     cap = row.get(args.capacitive_field, "")
+    cap_valid = row.get("capacitive_valid", "")
     therm_mv = row.get("thermistor_millivolts", "")
-    temp = row.get("temperature_c", "")
-    pulse_avg = row.get("pulse_average", "")
-    bpm = row.get("heart_rate_bpm", "")
+    temp = row.get("temperature_f", "")
+    bpm = row.get("bpm", "")
+    touch = row.get("touch_status", "")
+    movement = row.get("movement_status", "")
     mpu = row.get("mpu_connected", "")
     accel = ""
-    if row.get("accel_x_raw", "") and row.get("accel_y_raw", "") and row.get("accel_z_raw", ""):
-        accel = f", accel_raw=({row['accel_x_raw']},{row['accel_y_raw']},{row['accel_z_raw']})"
+    if row.get("kalman_accel_x_g", "") and row.get("kalman_accel_y_g", "") and row.get("kalman_accel_z_g", ""):
+        accel = (
+            f", kalman_accel_g=({row['kalman_accel_x_g']},"
+            f"{row['kalman_accel_y_g']},{row['kalman_accel_z_g']})"
+        )
 
     elapsed = 0.0
     if stats.recording_started_monotonic is not None:
@@ -414,14 +467,17 @@ def display_status(
         f"samples={stats.samples_saved}",
         f"elapsed={elapsed:.1f}s",
         f"cap={cap}",
+        f"cap_valid={cap_valid}",
+        f"touch={touch}",
         f"thermistor_mV={therm_mv}",
-        f"pulse_avg={pulse_avg}",
         f"mpu={mpu}",
     ]
     if temp:
-        parts.append(f"temperature_c={temp}")
+        parts.append(f"temperature_f={temp}")
     if bpm:
         parts.append(f"bpm={bpm}")
+    if movement:
+        parts.append(f"movement={movement}")
     print(", ".join(parts) + accel)
 
 
@@ -497,7 +553,14 @@ def collect(args: argparse.Namespace) -> None:
         state = CollectorState.WAITING_FOR_START
 
         while state != CollectorState.FINISHED:
-            row = read_next_data_row(connection, fields, stats)
+            try:
+                row = read_next_data_row(connection, fields, stats)
+            except Exception as exc:
+                if not is_serial_exception(exc):
+                    raise
+                connection = reconnect_serial(connection, args, fields)
+                released = True
+                continue
             if row is None:
                 continue
 
@@ -543,7 +606,7 @@ def collect(args: argparse.Namespace) -> None:
         stats.recording_finished_monotonic = time.monotonic()
         print("\nControl-C received. Preserving partial recording.")
     except Exception as exc:
-        if exc.__class__.__name__ != "SerialException":
+        if not is_serial_exception(exc):
             raise
         stop_reason = f"serial disconnection: {exc}"
         stats.recording_finished_monotonic = time.monotonic()

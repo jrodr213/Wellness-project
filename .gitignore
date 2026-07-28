@@ -3,3 +3,5 @@ __pycache__/
 *.py[cod]
 model_outputs/
 .DS_Store
+Hardware_code/.pio/
+Hardware_code/src/secrets.h
