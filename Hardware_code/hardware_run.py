@@ -447,15 +447,16 @@ def display_status(
     cap_valid = row.get("capacitive_valid", "")
     therm_mv = row.get("thermistor_millivolts", "")
     temp = row.get("temperature_f", "")
+    raw_temp = row.get("raw_temperature_f", "")
     bpm = row.get("bpm", "")
     touch = row.get("touch_status", "")
     movement = row.get("movement_status", "")
     mpu = row.get("mpu_connected", "")
     accel = ""
-    if row.get("kalman_accel_x_g", "") and row.get("kalman_accel_y_g", "") and row.get("kalman_accel_z_g", ""):
+    if row.get("accel_x_g", "") and row.get("accel_y_g", "") and row.get("accel_z_g", ""):
         accel = (
-            f", kalman_accel_g=({row['kalman_accel_x_g']},"
-            f"{row['kalman_accel_y_g']},{row['kalman_accel_z_g']})"
+            f", accel_g=({row['accel_x_g']},"
+            f"{row['accel_y_g']},{row['accel_z_g']})"
         )
 
     elapsed = 0.0
@@ -474,6 +475,8 @@ def display_status(
     ]
     if temp:
         parts.append(f"temperature_f={temp}")
+    if raw_temp:
+        parts.append(f"raw_temperature_f={raw_temp}")
     if bpm:
         parts.append(f"bpm={bpm}")
     if movement:

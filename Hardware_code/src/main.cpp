@@ -77,11 +77,12 @@ const float ACCEL_Y_OFFSET_COUNTS = 0.0f;
 const float ACCEL_Y_COUNTS_PER_G = 16384.0f;
 const float ACCEL_Z_OFFSET_COUNTS = 0.0f;
 const float ACCEL_Z_COUNTS_PER_G = 16384.0f;
-const float KALMAN_PROCESS_NOISE = 0.01f;
-const float KALMAN_MEASUREMENT_NOISE = 0.08f;
-const float KALMAN_INITIAL_ERROR = 1.0f;
+const float TEMPERATURE_KALMAN_PROCESS_NOISE = 0.01f;
+const float TEMPERATURE_KALMAN_MEASUREMENT_NOISE = 0.08f;
 const float MOVEMENT_THRESHOLD_G = 0.12f;
 const int MOVEMENT_STATUS_CONFIRMATION_SAMPLES = 3;
+const float MIN_REASONABLE_TEMPERATURE_F = 40.0f;
+const float MAX_REASONABLE_TEMPERATURE_F = 120.0f;
 
 const unsigned long TOUCH_POLL_INTERVAL_MS = 50;
 const int TOUCH_CONFIRMATION_SAMPLES = 2;
@@ -120,6 +121,7 @@ struct TemperatureSummary {
     float averageMilliVolts;
     float lowerResistanceOhms;
     float thermistorResistanceOhms;
+    float rawTemperatureF;
     float temperatureF;
 };
 
@@ -154,34 +156,32 @@ struct MpuSummary {
     float accelXG;
     float accelYG;
     float accelZG;
-    float kalmanAccelXG;
-    float kalmanAccelYG;
-    float kalmanAccelZG;
     float filteredMagnitudeG;
     float movementIntensityG;
     bool moving;
 };
 
-class OneDimensionalKalmanFilter {
+class TemperatureKalmanFilter {
 public:
-    OneDimensionalKalmanFilter(float processNoise, float measurementNoise, float initialError)
+    TemperatureKalmanFilter(float processNoise, float measurementNoise)
         : q(processNoise),
           r(measurementNoise),
-          p(initialError),
+          p(measurementNoise),
           x(0.0f),
           initialized(false) {}
 
     float update(float measurement) {
         if (!initialized) {
             x = measurement;
+            p = r;
             initialized = true;
             return x;
         }
 
-        p += q;
-        const float gain = p / (p + r);
+        const float pPredict = p + q;
+        const float gain = pPredict / (pPredict + r);
         x += gain * (measurement - x);
-        p *= (1.0f - gain);
+        p = (1.0f - gain) * pPredict;
         return x;
     }
 
@@ -193,20 +193,9 @@ private:
     bool initialized;
 };
 
-OneDimensionalKalmanFilter accelXKalman(
-    KALMAN_PROCESS_NOISE,
-    KALMAN_MEASUREMENT_NOISE,
-    KALMAN_INITIAL_ERROR
-);
-OneDimensionalKalmanFilter accelYKalman(
-    KALMAN_PROCESS_NOISE,
-    KALMAN_MEASUREMENT_NOISE,
-    KALMAN_INITIAL_ERROR
-);
-OneDimensionalKalmanFilter accelZKalman(
-    KALMAN_PROCESS_NOISE,
-    KALMAN_MEASUREMENT_NOISE,
-    KALMAN_INITIAL_ERROR
+TemperatureKalmanFilter temperatureKalman(
+    TEMPERATURE_KALMAN_PROCESS_NOISE,
+    TEMPERATURE_KALMAN_MEASUREMENT_NOISE
 );
 
 float pulseBaseline = 0.0f;
@@ -247,6 +236,10 @@ unsigned long elapsedMillis(unsigned long now, unsigned long previous) {
     return now - previous;
 }
 
+float applyTemperatureKalman(float rawTemperatureF) {
+    return temperatureKalman.update(rawTemperatureF);
+}
+
 uint32_t readMilliVoltsCompat(int pin, int rawValue) {
 #if defined(ARDUINO_ARCH_ESP32)
     return analogReadMilliVolts(pin);
@@ -271,7 +264,7 @@ TemperatureSummary readTemperatureSummary() {
     }
 
     if (validCount == 0) {
-        return {false, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        return {false, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     }
 
     const float averageRaw = static_cast<float>(rawSum) / static_cast<float>(validCount);
@@ -280,7 +273,7 @@ TemperatureSummary readTemperatureSummary() {
     const float adcVoltage = averageMilliVolts / 1000.0f;
 
     if (!THERMISTOR_FIXED_RESISTOR_TO_3V3 || LM358_VOLTAGE_GAIN <= 0.0f) {
-        return {false, averageRaw, averageMilliVolts, 0.0f, 0.0f, 0.0f};
+        return {false, averageRaw, averageMilliVolts, 0.0f, 0.0f, 0.0f, 0.0f};
     }
 
     const float dividerNodeVoltage = adcVoltage / LM358_VOLTAGE_GAIN;
@@ -289,19 +282,19 @@ TemperatureSummary readTemperatureSummary() {
     if (dividerNodeVoltage <= 0.0f ||
         dividerNodeVoltage >= ADC_SUPPLY_VOLTS ||
         denominator <= 0.0f) {
-        return {false, averageRaw, averageMilliVolts, 0.0f, 0.0f, 0.0f};
+        return {false, averageRaw, averageMilliVolts, 0.0f, 0.0f, 0.0f, 0.0f};
     }
 
     const float lowerResistanceOhms =
         THERMISTOR_FIXED_RESISTOR_OHMS * dividerNodeVoltage / denominator;
     if (!isfinite(lowerResistanceOhms) || lowerResistanceOhms <= 0.0f) {
-        return {false, averageRaw, averageMilliVolts, lowerResistanceOhms, 0.0f, 0.0f};
+        return {false, averageRaw, averageMilliVolts, lowerResistanceOhms, 0.0f, 0.0f, 0.0f};
     }
 
     const float thermistorReciprocal =
         (1.0f / lowerResistanceOhms) - (1.0f / THERMISTOR_PARALLEL_RESISTOR_OHMS);
     if (!isfinite(thermistorReciprocal) || thermistorReciprocal <= 0.0f) {
-        return {false, averageRaw, averageMilliVolts, lowerResistanceOhms, 0.0f, 0.0f};
+        return {false, averageRaw, averageMilliVolts, lowerResistanceOhms, 0.0f, 0.0f, 0.0f};
     }
 
     const float thermistorResistanceOhms = 1.0f / thermistorReciprocal;
@@ -318,24 +311,31 @@ TemperatureSummary readTemperatureSummary() {
             averageMilliVolts,
             lowerResistanceOhms,
             thermistorResistanceOhms,
+            0.0f,
             0.0f
         };
     }
 
     const float temperatureC = (1.0f / inverseTemperatureK) - 273.15f;
-    const float temperatureF = ((temperatureC * 9.0f / 5.0f) + 32.0f) *
+    const float rawTemperatureF = ((temperatureC * 9.0f / 5.0f) + 32.0f) *
         TEMPERATURE_CALIBRATION_GAIN + TEMPERATURE_CALIBRATION_OFFSET_F;
 
-    if (!isfinite(temperatureF)) {
+    if (!isfinite(rawTemperatureF) ||
+        rawTemperatureF < MIN_REASONABLE_TEMPERATURE_F ||
+        rawTemperatureF > MAX_REASONABLE_TEMPERATURE_F) {
         return {
             false,
             averageRaw,
             averageMilliVolts,
             lowerResistanceOhms,
             thermistorResistanceOhms,
+            rawTemperatureF,
             0.0f
         };
     }
+
+    // The hardware RC filter removes high-frequency thermistor noise; this Kalman filter further stabilizes the calculated temperature.
+    const float filteredTemperatureF = applyTemperatureKalman(rawTemperatureF);
 
     return {
         true,
@@ -343,7 +343,8 @@ TemperatureSummary readTemperatureSummary() {
         averageMilliVolts,
         lowerResistanceOhms,
         thermistorResistanceOhms,
-        temperatureF
+        rawTemperatureF,
+        filteredTemperatureF
     };
 }
 
@@ -647,9 +648,6 @@ MpuSummary readMpuSummary() {
         0.0f,
         0.0f,
         0.0f,
-        0.0f,
-        0.0f,
-        0.0f,
         movementMoving
     };
 
@@ -682,13 +680,10 @@ MpuSummary readMpuSummary() {
         ACCEL_Z_OFFSET_COUNTS,
         ACCEL_Z_COUNTS_PER_G
     );
-    summary.kalmanAccelXG = accelXKalman.update(summary.accelXG);
-    summary.kalmanAccelYG = accelYKalman.update(summary.accelYG);
-    summary.kalmanAccelZG = accelZKalman.update(summary.accelZG);
     summary.filteredMagnitudeG = sqrtf(
-        summary.kalmanAccelXG * summary.kalmanAccelXG +
-        summary.kalmanAccelYG * summary.kalmanAccelYG +
-        summary.kalmanAccelZG * summary.kalmanAccelZG
+        summary.accelXG * summary.accelXG +
+        summary.accelYG * summary.accelYG +
+        summary.accelZG * summary.accelZG
     );
     summary.movementIntensityG = fabsf(summary.filteredMagnitudeG - 1.0f);
 
@@ -800,6 +795,8 @@ String buildMeasurementJson(
     json += ",";
     appendJsonFloat(json, "temperature_f", temperature.valid, temperature.temperatureF, 2);
     json += ",";
+    appendJsonFloat(json, "raw_temperature_f", temperature.valid, temperature.rawTemperatureF, 2);
+    json += ",";
     appendJsonBool(json, "temperature_valid", temperature.valid);
     json += ",";
     appendJsonFloat(json, "bpm", pulse.bpmValid, pulse.bpm, 2);
@@ -821,12 +818,6 @@ String buildMeasurementJson(
     appendJsonFloat(json, "accel_y_g", mpuSummary.valid, mpuSummary.accelYG, 5);
     json += ",";
     appendJsonFloat(json, "accel_z_g", mpuSummary.valid, mpuSummary.accelZG, 5);
-    json += ",";
-    appendJsonFloat(json, "kalman_accel_x_g", mpuSummary.valid, mpuSummary.kalmanAccelXG, 5);
-    json += ",";
-    appendJsonFloat(json, "kalman_accel_y_g", mpuSummary.valid, mpuSummary.kalmanAccelYG, 5);
-    json += ",";
-    appendJsonFloat(json, "kalman_accel_z_g", mpuSummary.valid, mpuSummary.kalmanAccelZG, 5);
     json += ",";
     appendJsonFloat(json, "movement_intensity_g", mpuSummary.valid, mpuSummary.movementIntensityG, 5);
     json += ",\"movement_status\":";
@@ -903,8 +894,8 @@ void printFields() {
         "mpu_connected,accel_x_raw,accel_y_raw,accel_z_raw,"
         "gyro_x_raw,gyro_y_raw,gyro_z_raw,"
         "accel_x_g,accel_y_g,accel_z_g,"
-        "kalman_accel_x_g,kalman_accel_y_g,kalman_accel_z_g,"
-        "accel_magnitude_g,movement_intensity_g,movement_status"
+        "accel_magnitude_g,movement_intensity_g,movement_status,"
+        "raw_temperature_f"
     );
     fieldsPrinted = true;
 }
@@ -947,12 +938,6 @@ void printMpuCsvValues(const MpuSummary &summary) {
     printFloatOrBlank(summary.valid, summary.accelYG, 5);
     Serial.print(',');
     printFloatOrBlank(summary.valid, summary.accelZG, 5);
-    Serial.print(',');
-    printFloatOrBlank(summary.valid, summary.kalmanAccelXG, 5);
-    Serial.print(',');
-    printFloatOrBlank(summary.valid, summary.kalmanAccelYG, 5);
-    Serial.print(',');
-    printFloatOrBlank(summary.valid, summary.kalmanAccelZG, 5);
     Serial.print(',');
     printFloatOrBlank(summary.valid, summary.filteredMagnitudeG, 5);
     Serial.print(',');
@@ -1016,6 +1001,8 @@ void printData(
     Serial.print(capacitive.timeoutSamples);
     Serial.print(',');
     printMpuCsvValues(mpuSummary);
+    Serial.print(',');
+    printFloatOrBlank(temperature.valid, temperature.rawTemperatureF, 2);
     Serial.println();
 }
 

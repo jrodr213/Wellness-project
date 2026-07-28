@@ -32,6 +32,8 @@ After startup, the capacitive foil acts as a start/stop control:
 4. Stop the session on a second confirmed touch.
 5. Require release before returning to the idle state.
 
+The `temperature_f` field is the Kalman-filtered thermistor temperature used by downstream analysis. The firmware also appends `raw_temperature_f` for comparison.
+
 Serial output remains machine-readable:
 
 - `INFO,...` for normal status messages
@@ -110,7 +112,7 @@ Train the autoencoder:
 cd ML_code
 ../.venv/bin/python run.py \
   --csv ../Hardware_code/data/wellness_data.csv \
-  --features temperature_f bpm capacitive_filtered_us touch_status accel_x_g accel_y_g accel_z_g kalman_accel_x_g kalman_accel_y_g kalman_accel_z_g movement_intensity_g \
+  --features temperature_f bpm capacitive_filtered_us touch_status accel_x_g accel_y_g accel_z_g movement_intensity_g \
   --window-size 50 \
   --stride 5 \
   --batch-size 32 \
